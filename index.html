@@ -94,6 +94,13 @@ textarea.field{resize:none;height:76px}
 .toast{position:fixed;left:50%;top:calc(var(--safe-t) + 14px);transform:translate(-50%,-80px);background:var(--text);color:var(--bg);
   padding:10px 18px;border-radius:999px;font-size:14px;z-index:20;transition:transform .3s}
 .toast.on{transform:translate(-50%,0)}
+.scanbtn{width:100%;padding:14px;border-radius:16px;background:var(--accent-soft);color:var(--accent);font-weight:600;font-size:16px;margin-bottom:6px}
+.scan{position:fixed;inset:0;z-index:30;background:#000;display:flex;flex-direction:column}
+.scan video{flex:1;width:100%;object-fit:cover;min-height:0}
+.scan .frame{position:absolute;left:50%;top:42%;width:66vw;max-width:300px;aspect-ratio:1;transform:translate(-50%,-50%);border-radius:24px;box-shadow:0 0 0 100vmax rgba(0,0,0,.45);border:2px solid rgba(255,255,255,.85)}
+.scan .hint{position:absolute;left:0;right:0;top:calc(var(--safe-t) + 24px);text-align:center;color:#fff;font-size:16px;padding:0 30px}
+.scan .bot{position:absolute;left:20px;right:20px;bottom:calc(var(--safe-b) + 20px);display:flex;gap:10px}
+.scan .bot button,.scan .bot label{flex:1;padding:15px;border-radius:16px;background:rgba(255,255,255,.16);color:#fff;font-weight:500;text-align:center;-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px)}
 .gear{font-size:20px;color:var(--muted);padding:6px}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
 </style>
@@ -118,6 +125,7 @@ textarea.field{resize:none;height:76px}
 <div class="toast" id="toast"></div>
 <input type="file" id="importFile" accept="application/json" class="hide">
 
+<script src="jsQR.js"></script>
 <script>
 const KEY='remont-v1';
 const CATS=[
@@ -139,10 +147,10 @@ function save(){try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){toast('
 /* фото чеков — IndexedDB */
 let dbp=null;
 function db(){return dbp||(dbp=new Promise((ok,no)=>{const r=indexedDB.open('remont-photos',1);
- r.onupgradeneeded=()=>r.result.createObjectStore('p');r.onsuccess=()=>ok(r.result);r.onerror=()=>no(r.error)}))}
-async function pPut(id,v){const d=await db();return new Promise(ok=>{const t=d.transaction('p','readwrite');t.objectStore('p').put(v,id);t.oncomplete=ok})}
-async function pGet(id){const d=await db();return new Promise(ok=>{const r=d.transaction('p').objectStore('p').get(id);r.onsuccess=()=>ok(r.result);r.onerror=()=>ok(null)})}
-async function pDel(id){const d=await db();return new Promise(ok=>{const t=d.transaction('p','readwrite');t.objectStore('p').delete(id);t.oncomplete=ok})}
+ r.onupgradeneeded=()=>r.result.createObjectStore('p');r.onsuccess=()=>{const d=r.result;d.onversionchange=()=>{d.close();dbp=null};ok(d)};r.onerror=()=>{dbp=null;no(r.error)};setTimeout(()=>no('timeout'),4000)}).catch(e=>{dbp=null;throw e}))}
+async function pPut(id,v){const d=await db();return new Promise((ok,no)=>{const t=d.transaction('p','readwrite');t.objectStore('p').put(v,id);t.oncomplete=ok;t.onerror=t.onabort=()=>no(t.error);setTimeout(()=>no('timeout'),5000)})}
+async function pGet(id){let d;try{d=await db()}catch(e){return null}return new Promise(ok=>{const r=d.transaction('p').objectStore('p').get(id);r.onsuccess=()=>ok(r.result);r.onerror=()=>ok(null)})}
+async function pDel(id){let d;try{d=await db()}catch(e){return}return new Promise(ok=>{const t=d.transaction('p','readwrite');t.objectStore('p').delete(id);t.oncomplete=ok})}
 function shrink(file){return new Promise((ok,no)=>{const img=new Image();const u=URL.createObjectURL(file);
  img.onload=()=>{const m=1400,k=Math.min(1,m/Math.max(img.width,img.height));const c=document.createElement('canvas');
   c.width=img.width*k;c.height=img.height*k;c.getContext('2d').drawImage(img,0,0,c.width,c.height);URL.revokeObjectURL(u);ok(c.toDataURL('image/jpeg',.72))};
@@ -200,10 +208,11 @@ function fmtDate(d){const t=today();const y=new Date(Date.parse(t)-864e5).toISOS
 /* шторка */
 function openSheet(html){$('#sheet').innerHTML='<div class="grab"></div>'+html;$('#sheet').scrollTop=0;$('#sheet').classList.add('on');$('#back').classList.add('on')}
 function closeSheet(){$('#sheet').classList.remove('on');$('#back').classList.remove('on');document.activeElement?.blur()}
-let draft=null;
+let draft=null;window.draftRef=()=>draft;
 function editForm(it){
  draft=it?{...it}:{id:uid(),sum:'',cat:'mat',note:'',date:today(),photo:false,_new:true};
  openSheet(`<h2>${it?'Изменить':'Новая трата'}<button data-act="close">Отмена</button></h2>
+ ${it?'':'<button class="scanbtn" data-act="scan">📷 Сканировать QR-код чека</button>'}
  <input class="amount" id="fSum" inputmode="decimal" placeholder="0 ₽" value="${draft.sum||''}">
  <div class="cats">${CATS.map(c=>`<button data-cat="${c.id}" class="${draft.cat===c.id?'on':''}"><span>${c.e}</span>${c.n}</button>`).join('')}</div>
  <input class="field" id="fNote" placeholder="Что купил (необязательно)" value="${esc(draft.note)}" maxlength="80">
@@ -237,6 +246,30 @@ function num(v){return parseFloat(String(v).replace(/\s/g,'').replace(',','.'))}
 function toast(t){const e=$('#toast');e.textContent=t;e.classList.add('on');clearTimeout(e._t);e._t=setTimeout(()=>e.classList.remove('on'),2000)}
 function download(name,data,type){const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([data],{type}));a.download=name;document.body.append(a);a.click();setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove()},500)}
 
+/* QR чека: t=20261117T1520&s=1234.50&fn=..&i=..&fp=..&n=1 */
+function parseQR(txt){const q=new URLSearchParams(String(txt).trim().replace(/^.*\?/,''));const s=parseFloat((q.get('s')||'').replace(',','.'));
+ const t=q.get('t')||'';const m=t.match(/^(\d{4})(\d{2})(\d{2})/);if(!(s>0))return null;return {sum:s,date:m?`${m[1]}-${m[2]}-${m[3]}`:null,fp:q.get('fp')||''}}
+function decodeCanvas(c){const x=c.getContext('2d',{willReadFrequently:true});const d=x.getImageData(0,0,c.width,c.height);const r=jsQR(d.data,d.width,d.height,{inversionAttempts:'attemptBoth'});return r&&r.data}
+function decodeImg(src){return new Promise(ok=>{const im=new Image();im.onload=()=>{for(const m of [1200,800,1800]){const k=Math.min(1,m/Math.max(im.width,im.height));const c=document.createElement('canvas');
+ c.width=im.width*k;c.height=im.height*k;c.getContext('2d').drawImage(im,0,0,c.width,c.height);const r=decodeCanvas(c);if(r)return ok(r)}ok(null)};im.onerror=()=>ok(null);im.src=src})}
+function applyQR(txt){const r=parseQR(txt);if(!r){toast('Это не QR-код кассового чека');return false}
+ if(r.fp&&S.items.some(i=>i.fp===r.fp&&i.id!==draft.id))toast('⚠️ Этот чек уже добавлен');else toast('Чек считан: '+rub(r.sum));
+ $('#fSum').value=String(r.sum).replace('.',',');if(r.date)$('#fDate').value=r.date;draft.fp=r.fp;return true}
+let scanStream=null,scanOn=false;
+async function startScan(){const el=document.createElement('div');el.className='scan';el.id='scan';
+ el.innerHTML=`<video playsinline muted autoplay></video><div class="frame"></div><div class="hint">Наведи камеру на QR-код чека</div>
+ <div class="bot"><label>🖼 Из фото<input type="file" id="scanFile" accept="image/*" class="hide"></label><button data-act="scanClose">Закрыть</button></div>`;
+ document.body.append(el);
+ try{scanStream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment',width:{ideal:1280},height:{ideal:1280}},audio:false})}
+ catch(err){el.querySelector('.hint').textContent='Нет доступа к камере. Разреши камеру в настройках Safari или выбери фото чека.';return}
+ const v=el.querySelector('video');v.srcObject=scanStream;await v.play().catch(()=>{});scanOn=true;
+ const c=document.createElement('canvas');
+ const tick=()=>{if(!scanOn)return;if(v.readyState>=2&&v.videoWidth){const side=Math.min(v.videoWidth,v.videoHeight)*.8,k=Math.min(1,640/side);
+  c.width=c.height=side*k;c.getContext('2d',{willReadFrequently:true}).drawImage(v,(v.videoWidth-side)/2,(v.videoHeight-side)/2,side,side,0,0,c.width,c.height);
+  const r=decodeCanvas(c);if(r&&parseQR(r)){navigator.vibrate?.(60);stopScan();applyQR(r);return}}
+  setTimeout(()=>requestAnimationFrame(tick),120)};tick()}
+function stopScan(){scanOn=false;scanStream?.getTracks().forEach(t=>t.stop());scanStream=null;$('#scan')?.remove()}
+
 document.addEventListener('click',async e=>{
  const t=e.target.closest('button');if(!t)return;
  if(t.id==='add')return editForm();
@@ -246,13 +279,16 @@ document.addEventListener('click',async e=>{
  if(t.classList.contains('item'))return viewItem(t.dataset.id);
  const a=t.dataset.act;
  if(a==='close')return closeSheet();
+ if(a==='scan')return startScan();
+ if(a==='scanClose')return stopScan();
  if(a==='edit')return editForm(S.items.find(x=>x.id===t.dataset.id));
  if(a==='budget')return budgetForm();
  if(a==='saveBudget'){S.budget=num($('#fBudget').value)||0;save();render();closeSheet();return}
  if(a==='save'){
   const s=num($('#fSum').value);if(!(s>0)){$('#fSum').focus();return toast('Введи сумму')}
+  if(t.disabled)return;t.disabled=true;const draft=window.draftRef();
   draft.sum=Math.round(s*100)/100;draft.note=$('#fNote').value.trim();draft.date=$('#fDate').value||today();
-  if(draft._photo){await pPut(draft.id,draft._photo);draft.photo=true}
+  if(draft._photo){try{await pPut(draft.id,draft._photo);draft.photo=true}catch(err){toast('Фото не сохранилось, сумма сохранена')}}
   const isNew=draft._new;delete draft._new;delete draft._photo;draft.ts=draft.ts||Date.now();
   if(isNew)S.items.push(draft);else S.items=S.items.map(x=>x.id===draft.id?draft:x);
   save();render();closeSheet();toast(isNew?'Добавлено: '+rub(draft.sum):'Сохранено');return}
@@ -266,7 +302,9 @@ document.addEventListener('click',async e=>{
  if(a==='wipe'){if(!confirm('Удалить все траты без возможности восстановления?'))return;for(const i of S.items)if(i.photo)await pDel(i.id);S={items:[],budget:0};save();render();closeSheet();return toast('Всё удалено')}
 });
 document.addEventListener('change',async e=>{
- if(e.target.id==='fPhoto'&&e.target.files[0]){try{draft._photo=await shrink(e.target.files[0]);$('#fPrev').innerHTML=`<img src="${draft._photo}">`}catch(err){toast('Не удалось открыть фото')}}
+ if(e.target.id==='scanFile'&&e.target.files[0]){const f=e.target.files[0];const u=URL.createObjectURL(f);const r=await decodeImg(u);URL.revokeObjectURL(u);
+  if(r&&parseQR(r)){stopScan();applyQR(r);try{draft._photo=await shrink(f);$('#fPrev').innerHTML=`<img src="${draft._photo}">`}catch(_){}}else toast('QR-код на фото не найден');return}
+ if(e.target.id==='fPhoto'&&e.target.files[0]){try{draft._photo=await shrink(e.target.files[0]);$('#fPrev').innerHTML=`<img src="${draft._photo}">`;if(!$('#fSum').value){const u=URL.createObjectURL(e.target.files[0]);const r=await decodeImg(u);URL.revokeObjectURL(u);if(r&&parseQR(r))applyQR(r)}}catch(err){toast('Не удалось открыть фото')}}
  if(e.target.id==='importFile'&&e.target.files[0]){try{const d=JSON.parse(await e.target.files[0].text());
   if(!Array.isArray(d.items))throw 0;if(!confirm(`Заменить текущие данные копией (${d.items.length} трат)?`))return;
   for(const [id,p] of Object.entries(d.photos||{}))if(p)await pPut(id,p);
